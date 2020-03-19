@@ -12,10 +12,40 @@ from utils import AdamW
 from data import get_dataloader
 from evaluate import f1_score, exact_match_score, metric_max_over_ground_truths
 
-np.random.seed(42)
-torch.manual_seed(42)
+SEED = 42
+
+np.random.seed(SEED)
+torch.manual_seed(SEED)
 
 norm_tokenizer = BertTokenizer.from_pretrained('/home/M10815022/Models/bert-wwm-ext')
+
+
+def is_chinese(cp):
+    cp = ord(cp)
+    if ((0x4E00 <= cp <= 0x9FFF) or (0x3400 <= cp <= 0x4DBF)
+            or (0x20000 <= cp <= 0x2A6DF) or (0x2A700 <= cp <= 0x2B73F)
+            or (0x2B740 <= cp <= 0x2B81F) or (0x2B820 <= cp <= 0x2CEAF)
+            or (0xF900 <= cp <= 0xFAFF) or (0x2F800 <= cp <= 0x2FA1F)):
+        return True
+    return False
+
+
+def convert_tokens_to_string(tokens):
+    output_string = str()
+    ends_with_chinese = True
+    for t in tokens:
+        if is_chinese(t[-1]):
+            output_string += t
+            ends_with_chinese = True
+        else:
+            if ends_with_chinese:
+                output_string += t
+            else:
+                output_string += ' ' + t
+            ends_with_chinese = False
+
+    output_string = output_string.replace(' ##', '')
+    return output_string
 
 
 def validate_dataset(model, split, tokenizer, topk=1, prefix=None):
@@ -43,7 +73,7 @@ def validate_dataset(model, split, tokenizer, topk=1, prefix=None):
         start_logits = start_logits.cpu().clone()
         fwd_end_logits = end_logits.cpu().clone()
         
-        start_probs = softmax(start_logits, dim=1)
+        start_probs = start_logits #softmax(start_logits, dim=1)
         fwd_start_probs, fwd_start_index = start_probs.topk(topk*5, dim=1)
 
         # BWD
@@ -61,66 +91,77 @@ def validate_dataset(model, split, tokenizer, topk=1, prefix=None):
         start_logits = start_logits.cpu().clone()
         bwd_end_logits = end_logits.cpu().clone()
 
-        start_probs = softmax(start_logits, dim=1)
+        start_probs = start_logits #softmax(start_logits, dim=1)
         bwd_start_probs, bwd_start_index = start_probs.topk(topk*5, dim=1)
 
         # FWD-BWD
         for i, answer in enumerate(answers):
             preds, probs = [], []
-            for n in range(topk):
+            for n in range(topk*5):
                 # FWD
+                start_prob = fwd_start_probs[i][n].item()
                 start_ind = fwd_start_index[i][n].item()
                 beam_end_logits = fwd_end_logits[i].clone().unsqueeze(0)
 
-                end_probs = softmax(beam_end_logits, dim=1)
+                end_probs = beam_end_logits #softmax(beam_end_logits, dim=1)
                 end_probs[0, :start_ind] += -1e10
                 end_probs[0, start_ind+20:] += -1e10
-                end_probs, end_index = end_probs.topk(1, dim=1)
-                end_ind = end_index[0][0]
+                end_probs, end_index = end_probs.topk(topk*5, dim=1)
 
-                prob = (fwd_start_probs[i][n] * end_probs[0][0]).item()
-                span_tokens = fwd_input_tokens_no_unks[i][start_ind:end_ind+1]
-                pred = ''.join(tokenizer.convert_tokens_to_string(span_tokens).split())
+                # topk*topk combination
+                for m in range(topk*5):
+                    end_prob = end_probs[0][m].item()
+                    end_ind = end_index[0][m].item()
 
-                if pred == tokenizer.sep_token or pred == '':
-                    pass
-                elif pred and pred not in preds:
-                    probs.append(prob)
-                    preds.append(pred)
-                elif pred and pred in preds:
-                    pred_idx = preds.index(pred)
-                    if prob > probs[pred_idx]:
-                        probs[pred_idx] = prob
-                    #probs[preds.index(pred)] += prob
-                else:
-                    pass
+                    prob = start_prob + end_prob  # log prob  i.e. logits
+                    span_tokens = fwd_input_tokens_no_unks[i][start_ind:end_ind+1]
+                    pred = convert_tokens_to_string(span_tokens)
+
+                    if pred == tokenizer.sep_token or pred == '':
+                        pass
+                    elif pred and pred not in preds:
+                        probs.append(prob)
+                        preds.append(pred)
+                    elif pred and pred in preds:
+                        pred_idx = preds.index(pred)
+                        if prob > probs[pred_idx]:
+                            probs[pred_idx] = prob
+                        #probs[preds.index(pred)] += prob
+                    else:
+                        pass
                 
                 # BWD
+                start_prob = bwd_start_probs[i][n].item()
                 start_ind = bwd_start_index[i][n].item()
                 beam_end_logits = bwd_end_logits[i].clone().unsqueeze(0)
 
-                end_probs = softmax(beam_end_logits, dim=1)
+                end_probs = beam_end_logits #softmax(beam_end_logits, dim=1)
                 end_probs[0, :start_ind] += -1e10
                 end_probs[0, start_ind+20:] += -1e10
-                end_probs, end_index = end_probs.topk(1, dim=1)
+                end_probs, end_index = end_probs.topk(topk*5, dim=1)
                 end_ind = end_index[0][0]
 
-                prob = (bwd_start_probs[i][n] * end_probs[0][0]).item()
-                span_tokens = bwd_input_tokens_no_unks[i][start_ind:end_ind+1]
-                pred = ''.join(tokenizer.convert_tokens_to_string(span_tokens).split())
+                # topk*topk combination
+                for m in range(topk*5):
+                    end_prob = end_probs[0][m].item()
+                    end_ind = end_index[0][m].item()
 
-                if pred == tokenizer.sep_token or pred == '':
-                    pass
-                elif pred and pred not in preds:
-                    probs.append(prob)
-                    preds.append(pred)
-                elif pred and pred in preds:
-                    pred_idx = pred.index(pred)
-                    if prob > probs[pred_idx]:
-                        probs[pred_idx] = prob
-                    #probs[preds.index(pred)] += prob
-                else:
-                    pass
+                    prob = start_prob + end_prob  # log prob  i.e. logits
+                    span_tokens = bwd_input_tokens_no_unks[i][start_ind:end_ind+1]
+                    pred = convert_tokens_to_string(span_tokens)
+
+                    if pred == tokenizer.sep_token or pred == '':
+                        pass
+                    elif pred and pred not in preds:
+                        probs.append(prob)
+                        preds.append(pred)
+                    elif pred and pred in preds:
+                        pred_idx = pred.index(pred)
+                        if prob > probs[pred_idx]:
+                            probs[pred_idx] = prob
+                        #probs[preds.index(pred)] += prob
+                    else:
+                        pass
 
             count += 1
             if len(preds) > 0:
@@ -149,6 +190,8 @@ def validate(model, tokenizer, topk=1, prefix=None):
     val_avg_f1 = 100 * val_f1 / val_count
 
     # Test set
+    if prefix is None:
+        prefix = 'FGC'
     test_em, test_f1, test_count = validate_dataset(model, 'test', tokenizer, topk, prefix)
     test_avg_em = 100 * test_em / test_count
     test_avg_f1 = 100 * test_f1 / test_count
@@ -220,19 +263,17 @@ if __name__ == '__main__':
                     patience = 0
                     best_val = val_f1
                     best_state_dict = deepcopy(model.state_dict())
+                    save_path = join(sys.argv[3], 'state_dict.pth')
+                    torch.save(best_state_dict, save_path)
                 else:
                     patience += 1
 
-            if patience >= 10 or step >= 200000:
-                print('Finish training. Scoring 1-5 best results...')
-                save_path = join(sys.argv[3], 'finetune.ckpt')
+            if patience >= 5 or step >= 200000:
+                print('Finish training. Scoring 1-best for all test splits...')
+                save_path = join(sys.argv[3], 'state_dict.pth')
                 torch.save(best_state_dict, save_path)
                 model.load_state_dict(best_state_dict)
-                for k in range(1, 6):
-                    validate(model, tokenizer, topk=k)
-
-                print('Scoring 1-best for all test splits...')
-                for prefix in ('DRCD', 'Kaggle', 'Lee', 'FGC'):
+                for prefix in ('DRCD', 'Kaggle', 'Lee', 'ASR', 'FGC'):
                     validate(model, tokenizer, topk=1, prefix=prefix)
                 del model, dataloader
                 exit(0)

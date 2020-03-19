@@ -1,17 +1,17 @@
 #!/bin/bash
 
-python3_cmd=python3
+python3_cmd=python3.6
 
 stage=0
 use_gpu=cuda:0
 
 model=bert
 model_path=/home/M10815022/Models/roberta-wwm-ext
-save_path=./models/roberta-1.7.2-woASR
+save_path=./models/roberta-1.7.8-nm-AVG
 
-train_datasets="DRCD_train Lee_train Kaggle_train FGC_release_all_train DROP_train"
-dev_datasets="DRCD_dev Lee_dev Kaggle_dev FGC_release_all_dev DROP_dev"
-test_datasets="DRCD_test Lee_test Kaggle_test FGC_release_all_test"
+train_datasets="DRCD_train Kaggle_train Lee_train ASR_train FGC_release_all_train"
+dev_datasets="DRCD_dev Kaggle_dev Lee_dev ASR_dev FGC_release_all_dev"
+test_datasets="DRCD_test Kaggle_test Lee_test ASR_test FGC_release_all_test"
 
 
 if [ $stage -le 0 ]; then
